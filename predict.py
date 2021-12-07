@@ -129,6 +129,8 @@ def convert_input_file_to_tensor_dataset(
 def predict(pred_config):
     # load model and args
     args = get_args(pred_config)
+    args.model_dir = pred_config.model_dir
+
     device = get_device(pred_config)
     model = load_model(pred_config, args, device)
     logger.info(args)
