@@ -45,7 +45,7 @@ def convertString2dict(string):
     return ner
 
 
-def save_data_to_file(intents, labels, seqins, seqouts):
+def save_data_to_file(intents, slots, labels, seqins, seqouts):
     mkdir('VPS_data')
     mkdir('VPS_data/word-level')
     mkdir('VPS_data/word-level/train')
@@ -81,7 +81,7 @@ def save_data_to_file(intents, labels, seqins, seqouts):
     f.close()
 
 
-def process():
+def process(data):
     labels, seqins, seqouts = [], [], []
     for i in data:
         i = i.split(' - ')
@@ -96,5 +96,19 @@ def process():
             seqouts.append(seqout)
 
     intents = list(set(labels))
+    slots = []
+    for i in seqouts:
+        i = i.split()
+        slots += i
+    slots = list(set(slots))
 
-    save_data_to_file(intents, labels, seqins, seqouts)
+    save_data_to_file(intents, slots, labels, seqins, seqouts)
+
+
+if __name__ == '__main__':
+    import json
+
+    with open('data.json', 'r') as fp:
+        data = json.load(fp)
+
+    process(data)

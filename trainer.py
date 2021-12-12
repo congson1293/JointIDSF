@@ -46,9 +46,12 @@ class Trainer(object):
                 slot_label_lst=self.slot_label_lst,
             )
         # GPU or CPU
-        torch.cuda.set_device(self.args.gpu_id)
-        print(self.args.gpu_id)
-        print(torch.cuda.current_device())
+        try:
+            torch.cuda.set_device(self.args.gpu_id)
+        except:
+            pass
+        # print(self.args.gpu_id)
+        # print(torch.cuda.current_device())
         self.device = "cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu"
         self.model.to(self.device)
 
@@ -63,9 +66,9 @@ class Trainer(object):
             )
         else:
             t_total = len(train_dataloader) // self.args.gradient_accumulation_steps * self.args.num_train_epochs
-        print("check init")
-        results = self.evaluate("dev")
-        print(results)
+        # print("check init")
+        # results = self.evaluate("dev")
+        # print(results)
         # Prepare optimizer and schedule (linear warmup and decay)
         no_decay = ["bias", "LayerNorm.weight"]
         optimizer_grouped_parameters = [
