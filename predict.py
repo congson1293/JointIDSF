@@ -1,5 +1,4 @@
 import argparse
-import logging
 import os
 
 import numpy as np
@@ -9,20 +8,17 @@ from tqdm import tqdm
 from utils import MODEL_CLASSES, get_intent_labels, get_slot_labels, init_logger, load_tokenizer
 
 
-logger = logging.getLogger(__name__)
-
-
 def get_device(pred_config):
     return "cuda" if torch.cuda.is_available() and not pred_config.no_cuda else "cpu"
 
 
-def get_args(pred_config):
-    return torch.load(os.path.join(pred_config.model_dir, "training_args.bin"))
+def get_args(model_dir):
+    return torch.load(os.path.join(model_dir, "training_args.bin"))
 
 
-def load_model(pred_config, args, device):
+def load_model(args, device):
     # Check whether model exists
-    if not os.path.exists(pred_config.model_dir):
+    if not os.path.exists(args.model_dir):
         raise Exception("Model doesn't exists! Train first!")
 
     try:
@@ -31,7 +27,6 @@ def load_model(pred_config, args, device):
         )
         model.to(device)
         model.eval()
-        logger.info("***** Model Loaded *****")
     except Exception:
         raise Exception("Some model files might be missing...")
 
@@ -50,15 +45,14 @@ def read_input_file(pred_config):
 
 
 def convert_input_file_to_tensor_dataset(
-    lines,
-    pred_config,
-    args,
-    tokenizer,
-    pad_token_label_id,
-    cls_token_segment_id=0,
-    pad_token_segment_id=0,
-    sequence_a_segment_id=0,
-    mask_padding_with_zero=True,
+        lines,
+        args,
+        tokenizer,
+        pad_token_label_id,
+        cls_token_segment_id=0,
+        pad_token_segment_id=0,
+        sequence_a_segment_id=0,
+        mask_padding_with_zero=True,
 ):
     # Setting based on the current model type
     cls_token = tokenizer.cls_token
@@ -133,7 +127,6 @@ def predict(pred_config):
 
     device = get_device(pred_config)
     model = load_model(pred_config, args, device)
-    logger.info(args)
 
     intent_label_lst = get_intent_labels(args)
     slot_label_lst = get_slot_labels(args)
@@ -211,18 +204,111 @@ def predict(pred_config):
                     line = line + "[{}:{}] ".format(word, pred)
             f.write("<{}> -> {}\n".format(intent_label_lst[intent_pred], line.strip()))
 
-    logger.info("Prediction Done!")
+
+class JointIDSF:
+    def __init__(self):
+        self.model_dir = 'models'
+        self.device = 'cpu'
+        self.args = get_args(self.model_dir)
+        self.model = load_model(self.args, self.device)
+        self.intent_label_lst = get_intent_labels(self.args)
+        self.slot_label_lst = get_slot_labels(self.args)
+        self.pad_token_label_id = self.args.ignore_index
+        self.tokenizer = load_tokenizer(self.args)
+
+    def build_tensor_words(self, words, args, tokenizer, pad_token_label_id, cls_token_segment_id=0,
+                           pad_token_segment_id=0, sequence_a_segment_id=0, mask_padding_with_zero=True, device='cpu'):
+        # Setting based on the current model type
+        cls_token = tokenizer.cls_token
+        sep_token = tokenizer.sep_token
+        unk_token = tokenizer.unk_token
+        pad_token_id = tokenizer.pad_token_id
+
+        tokens = []
+        slot_label_mask = []
+        for word in words:
+            word_tokens = tokenizer.tokenize(word)
+            if not word_tokens:
+                word_tokens = [unk_token]  # For handling the bad-encoded word
+            tokens.extend(word_tokens)
+            # Use the real label id for the first token of the word, and padding ids for the remaining tokens
+            slot_label_mask.extend([pad_token_label_id + 1] + [pad_token_label_id] * (len(word_tokens) - 1))
+
+        # Account for [CLS] and [SEP]
+        special_tokens_count = 2
+        if len(tokens) > args.max_seq_len - special_tokens_count:
+            tokens = tokens[: (args.max_seq_len - special_tokens_count)]
+            slot_label_mask = slot_label_mask[: (args.max_seq_len - special_tokens_count)]
+
+        # Add [SEP] token
+        tokens += [sep_token]
+        token_type_ids = [sequence_a_segment_id] * len(tokens)
+        slot_label_mask += [pad_token_label_id]
+
+        # Add [CLS] token
+        tokens = [cls_token] + tokens
+        token_type_ids = [cls_token_segment_id] + token_type_ids
+        slot_label_mask = [pad_token_label_id] + slot_label_mask
+
+        input_ids = tokenizer.convert_tokens_to_ids(tokens)
+
+        # The mask has 1 for real tokens and 0 for padding tokens. Only real tokens are attended to.
+        attention_mask = [1 if mask_padding_with_zero else 0] * len(input_ids)
+
+        # Zero-pad up to the sequence length.
+        padding_length = args.max_seq_len - len(input_ids)
+        input_ids = input_ids + ([pad_token_id] * padding_length)
+        attention_mask = attention_mask + ([0 if mask_padding_with_zero else 1] * padding_length)
+        token_type_ids = token_type_ids + ([pad_token_segment_id] * padding_length)
+        slot_label_mask = slot_label_mask + ([pad_token_label_id] * padding_length)
+
+        input_ids = torch.tensor([input_ids], dtype=torch.long)
+        attention_mask = torch.tensor([attention_mask], dtype=torch.long).to(device)
+        token_type_ids = torch.tensor([token_type_ids], dtype=torch.long).to(device)
+        slot_label_mask = torch.tensor([slot_label_mask], dtype=torch.long).to(device)
+
+        return input_ids, attention_mask, token_type_ids, slot_label_mask
+
+    def predict(self, text):
+        words = text.split()
+
+        input_ids, attention_mask, token_type_ids, slot_label_mask = self.build_tensor_words(words, self.args,
+                                                                                             self.tokenizer,
+                                                                                             self.pad_token_label_id,
+                                                                                             device=self.device)
+
+        with torch.no_grad():
+            inputs = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "intent_label_ids": None,
+                "slot_labels_ids": None,
+            }
+            if self.args.model_type != "distilbert":
+                inputs["token_type_ids"] = token_type_ids
+            outputs = self.model(**inputs)
+            _, (intent_logits, slot_logits) = outputs[:2]
+
+            # Intent Prediction
+            intent_preds = intent_logits.detach().cpu().numpy()[0]
+            top_k_intents = intent_preds.argsort()[-5:][::-1]
+
+            # Slot prediction
+            slot_preds = np.array(self.model.crf.decode(slot_logits))[0]
+            all_slot_label_mask = slot_label_mask.detach().cpu().numpy()[0]
+            pass
 
 
 if __name__ == "__main__":
-    init_logger()
+    j = JointIDSF()
+    j.predict('chúc bạn một ngày tốt_lành')
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--input_file", default="sample_pred_in.txt", type=str, help="Input file for prediction")
     parser.add_argument("--output_file", default="sample_pred_out.txt", type=str, help="Output file for prediction")
     parser.add_argument("--model_dir", default="./atis_model", type=str, help="Path to save, load model")
 
-    parser.add_argument("--batch_size", default=32, type=int, help="Batch size for prediction")
+    parser.add_argument("--batch_size", default=64, type=int, help="Batch size for prediction")
     parser.add_argument("--no_cuda", action="store_true", help="Avoid using CUDA when available")
 
     pred_config = parser.parse_args()

@@ -12,6 +12,7 @@ def mkdir(dir_name: Text):
         except Exception as e:
             print(e)
 
+
 def seq2slot(input, ner):
     token2slot = dict()
     for i in ner:
@@ -35,7 +36,7 @@ def seq2slot(input, ner):
 
 
 def convertString2dict(string):
-    subStr = re.findall(r'{(.+?)}',string)
+    subStr = re.findall(r'{(.+?)}', string)
     ner = []
     for j in subStr:
         j = '{' + j + '}'

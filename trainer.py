@@ -136,18 +136,18 @@ class Trainer(object):
                     self.model.zero_grad()
                     global_step += 1
 
-                    if self.args.logging_steps > 0 and global_step % self.args.logging_steps == 0:
-                        print("\nTuning metrics:", self.args.tuning_metric)
-                        results = self.evaluate("dev")
-                        writer.add_scalar("Loss/validation", results["loss"], _)
-                        writer.add_scalar("Intent Accuracy/validation", results["intent_acc"], _)
-                        writer.add_scalar("Slot F1/validation", results["slot_f1"], _)
-                        writer.add_scalar("Mean Intent Slot", results["mean_intent_slot"], _)
-                        writer.add_scalar("Sentence Accuracy/validation", results["semantic_frame_acc"], _)
-                        early_stopping(results[self.args.tuning_metric], self.model, self.args)
-                        if early_stopping.early_stop:
-                            print("Early stopping")
-                            break
+                    # if self.args.logging_steps > 0 and global_step % self.args.logging_steps == 0:
+                    #     print("\nTuning metrics:", self.args.tuning_metric)
+                    #     results = self.evaluate("dev")
+                    #     writer.add_scalar("Loss/validation", results["loss"], _)
+                    #     writer.add_scalar("Intent Accuracy/validation", results["intent_acc"], _)
+                    #     writer.add_scalar("Slot F1/validation", results["slot_f1"], _)
+                    #     writer.add_scalar("Mean Intent Slot", results["mean_intent_slot"], _)
+                    #     writer.add_scalar("Sentence Accuracy/validation", results["semantic_frame_acc"], _)
+                    #     early_stopping(results[self.args.tuning_metric], self.model, self.args)
+                    #     if early_stopping.early_stop:
+                    #         print("Early stopping")
+                    #         break
 
                     # if self.args.save_steps > 0 and global_step % self.args.save_steps == 0:
                     #     self.save_model()
@@ -160,6 +160,8 @@ class Trainer(object):
                 train_iterator.close()
                 break
             writer.add_scalar("Loss/train", tr_loss / global_step, _)
+
+        self.save_model()
 
         return global_step, tr_loss / global_step
 
