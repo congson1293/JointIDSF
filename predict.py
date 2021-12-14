@@ -3,9 +3,12 @@ import os
 
 import numpy as np
 import torch
+from torch.nn.functional import softmax
 from torch.utils.data import DataLoader, SequentialSampler, TensorDataset
 from tqdm import tqdm
-from utils import MODEL_CLASSES, get_intent_labels, get_slot_labels, init_logger, load_tokenizer
+from utils import MODEL_CLASSES, get_intent_labels, get_slot_labels, load_tokenizer
+
+import math
 
 
 def get_device(pred_config):
@@ -290,18 +293,88 @@ class JointIDSF:
             _, (intent_logits, slot_logits) = outputs[:2]
 
             # Intent Prediction
+            intent_logits = softmax(intent_logits, dim=1)
             intent_preds = intent_logits.detach().cpu().numpy()[0]
             top_k_intents = intent_preds.argsort()[-5:][::-1]
+            top_k_intents_score = intent_preds[top_k_intents]
+            top_k_intents_label = [self.intent_label_lst[i] for i in top_k_intents]
 
             # Slot prediction
-            slot_preds = np.array(self.model.crf.decode(slot_logits))[0]
-            all_slot_label_mask = slot_label_mask.detach().cpu().numpy()[0]
-            pass
+            slot_preds = np.array(self.model.crf.decode(slot_logits))[0][1:]
+            slot_label_mask = slot_label_mask.detach().cpu().numpy()[0][1:]
+            slot_label = []
+            for i in range(len(slot_label_mask)):
+                mask = slot_label_mask[i]
+                if mask == self.pad_token_label_id:
+                    continue
+                label = self.slot_label_lst[slot_preds[i]]
+                slot_label.append(label)
+            slots = self.extract_label(words, slot_label)
+
+        intent_result, top_k_intent_result = self.convert_intent_to_rasa_format(top_k_intents,
+                                                                                top_k_intents_label,
+                                                                                top_k_intents_score)
+        slot_result = self.convert_slot_to_rasa_format(slots)
+
+        return intent_result, top_k_intent_result, slot_result
+
+    def extract_label(self, words, slot_label):
+        slots = {}
+        tag, entity, flag = None, [], False
+        processed_words = []
+        for i in range(len(slot_label)):
+            word, label = words[i], slot_label[i]
+            if label == 'O':
+                if flag:
+                    self.update_dict(slots, tag, entity)
+                    flag = False
+            elif 'B_' in label:
+                if flag:
+                    self.update_dict(slots, tag, entity)
+                tag = label.replace('B_', '')
+                entity = [word]
+                flag = True
+            else:  # 'I_' case
+                entity.append(word)
+            processed_words.append(word)
+        if flag:
+            self.update_dict(slots, tag, entity)
+
+        return slots
+
+    @staticmethod
+    def update_dict(d: dict, key: str, val: list):
+        try:
+            v = ' '.join(val)
+            d[key].append(v)
+        except:
+            d[key] = [v]
+
+    def convert_intent_to_rasa_format(self, top_k_intents_id, top_k_intents_label, top_k_intents_score):
+        result = []
+        for i in range(len(top_k_intents_score)):
+            intent_id = top_k_intents_id[i]
+            intent_name = top_k_intents_label[i]
+            intent_score = top_k_intents_score[i]
+            result.append({'id': intent_id,
+                          'name': intent_name,
+                          'confidence': intent_score})
+        return result[0], result
+
+    def convert_slot_to_rasa_format(self, slots):
+        result = []
+        for k, v in slots.items():
+            for e in v:
+                result.append({'entity': k,
+                               'value': e,
+                               'confidence_entity': 0.5,
+                               'extractor': 'JointIDSF'})
+        return result
 
 
 if __name__ == "__main__":
     j = JointIDSF()
-    j.predict('chúc bạn một ngày tốt_lành')
+    j.predict('địa_chỉ của mình 275 Nguyễn_Trãi , Thanh_Xuân_Trung , Thanh_Xuân , Hà_Nội')
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--input_file", default="sample_pred_in.txt", type=str, help="Input file for prediction")
