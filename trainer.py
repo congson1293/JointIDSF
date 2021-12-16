@@ -10,6 +10,8 @@ from tqdm.auto import tqdm, trange
 from transformers import AdamW, get_linear_schedule_with_warmup
 from utils import MODEL_CLASSES, compute_metrics, get_intent_labels, get_slot_labels
 
+from sklearn.metrics import accuracy_score, f1_score
+
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +109,9 @@ class Trainer(object):
             epoch_iterator = tqdm(train_dataloader, desc="Iteration", position=0, leave=True)
             print("\nEpoch", _)
 
+            total_intent_accuracy, total_slot_f1 = 0, 0
+            total_loss = 0
+
             for step, batch in enumerate(epoch_iterator):
                 self.model.train()
                 batch = tuple(t.to(self.device) for t in batch)  # GPU or CPU
@@ -121,6 +126,13 @@ class Trainer(object):
                     inputs["token_type_ids"] = batch[2]
                 outputs = self.model(**inputs)
                 loss = outputs[0]
+                intent_logits, slot_logits = outputs[1]
+
+                acc = self.cal_intent_acc(batch[3], intent_logits)
+                total_intent_accuracy += acc
+
+                f1 = self.cal_slot_f1(batch[4], batch[1], slot_logits)
+                total_slot_f1 += f1
 
                 if self.args.gradient_accumulation_steps > 1:
                     loss = loss / self.args.gradient_accumulation_steps
@@ -128,6 +140,8 @@ class Trainer(object):
                 loss.backward()
 
                 tr_loss += loss.item()
+                total_loss += loss.item()
+
                 if (step + 1) % self.args.gradient_accumulation_steps == 0:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.max_grad_norm)
 
@@ -136,25 +150,17 @@ class Trainer(object):
                     self.model.zero_grad()
                     global_step += 1
 
-                    # if self.args.logging_steps > 0 and global_step % self.args.logging_steps == 0:
-                    #     print("\nTuning metrics:", self.args.tuning_metric)
-                    #     results = self.evaluate("dev")
-                    #     writer.add_scalar("Loss/validation", results["loss"], _)
-                    #     writer.add_scalar("Intent Accuracy/validation", results["intent_acc"], _)
-                    #     writer.add_scalar("Slot F1/validation", results["slot_f1"], _)
-                    #     writer.add_scalar("Mean Intent Slot", results["mean_intent_slot"], _)
-                    #     writer.add_scalar("Sentence Accuracy/validation", results["semantic_frame_acc"], _)
-                    #     early_stopping(results[self.args.tuning_metric], self.model, self.args)
-                    #     if early_stopping.early_stop:
-                    #         print("Early stopping")
-                    #         break
-
-                    # if self.args.save_steps > 0 and global_step % self.args.save_steps == 0:
-                    #     self.save_model()
-
                 if 0 < self.args.max_steps < global_step:
                     epoch_iterator.close()
                     break
+
+            avg_intent_acc = total_intent_accuracy / len(train_dataloader)
+            avg_slot_f1 = total_slot_f1 / len(train_dataloader)
+            avg_loss = total_loss / len(train_dataloader)
+
+            print(f'loss = {avg_loss}\ti_acc={avg_intent_acc}\te_f1={avg_slot_f1}')
+
+            train_iterator.set_postfix(loss=avg_loss, i_acc=avg_intent_acc, e_f1=avg_slot_f1)
 
             if 0 < self.args.max_steps < global_step or early_stopping.early_stop:
                 train_iterator.close()
@@ -164,6 +170,24 @@ class Trainer(object):
         self.save_model()
 
         return global_step, tr_loss / global_step
+
+    def cal_intent_acc(self, labels, preds):
+        intent_logits = torch.argmax(preds, dim=1).detach().cpu().numpy()
+        intent_label_ids = labels.detach().cpu().numpy()
+        acc = accuracy_score(intent_label_ids, intent_logits)
+        return acc
+
+    def cal_slot_f1(self, slots, slots_mask, slot_logit):
+        total_f1 = 0
+        preds = self.model.crf.decode(slot_logit, mask=slots_mask.bool())
+        slots_ = slots.detach().cpu().numpy()
+        for i in range(len(slots_)):
+            pred = preds[i]
+            slot = slots_[i][:len(pred)]
+            f1 = f1_score(slot, pred, average='macro')
+            total_f1 += f1
+        return total_f1 / len(slots_)
+
 
     def write_evaluation_result(self, out_file, results):
         out_file = self.args.model_dir + "/" + out_file

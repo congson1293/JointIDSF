@@ -198,4 +198,4 @@ class JointIDSF:
 
 if __name__ == "__main__":
     j = JointIDSF()
-    j.predict('địa_chỉ của mình 275 Nguyễn_Trãi , Thanh_Xuân_Trung , Thanh_Xuân , Hà_Nội')
+    j.predict('mở tài khoản')
